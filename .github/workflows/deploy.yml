@@ -1,0 +1,84 @@
+name: Deploy StyleSnatcher to darkmintis-dev
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout StyleSnatcher repository
+        uses: actions/checkout@v4
+
+      - name: Checkout darkmintis-dev
+        uses: actions/checkout@v4
+        with:
+          repository: Darkmintis/darkmintis-dev
+          token: ${{ secrets.DEPLOY_PAT }}
+          path: main-repo
+
+      - name: Copy production files to main repo
+        run: |
+          # Remove old deployment
+          rm -rf main-repo/dist/stylesnatcher
+          mkdir -p main-repo/dist/stylesnatcher
+
+          # Copy production files
+          cp index.html main-repo/dist/stylesnatcher/
+          cp styles.css main-repo/dist/stylesnatcher/
+          cp script.js main-repo/dist/stylesnatcher/
+          cp README.md main-repo/dist/stylesnatcher/
+
+          echo "✅ Production files copied successfully"
+          echo "📦 Deployed files:"
+          ls -la main-repo/dist/stylesnatcher/
+
+      - name: Commit and push to darkmintis-dev
+        run: |
+          cd main-repo
+          git config user.name "GitHub Actions Bot"
+          git config user.email "actions@github.com"
+          
+          # Add changes
+          git add dist/stylesnatcher/
+          
+          # Commit only if there are changes
+          if git diff --staged --quiet; then
+            echo "ℹ️ No changes to deploy"
+          else
+            git commit -m "🎨 Update StyleSnatcher from commit ${GITHUB_SHA:0:7}"
+            git push
+            echo "✅ Changes pushed successfully"
+          fi
+
+      - name: Deployment summary
+        run: |
+          echo "## 🎉 Deployment Complete!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tool**: StyleSnatcher - Extract the Style DNA of Any Website" >> $GITHUB_STEP_SUMMARY
+          echo "- **Live URL**: https://darkmintis.dev/stylesnatcher" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit**: \`${GITHUB_SHA:0:7}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Triggered by**: ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Time**: $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📦 Deployed Files" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ index.html (Main page)" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ styles.css (Complete styling)" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ script.js (Color & font extraction logic)" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ README.md (Documentation)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🎨 Features Deployed" >> $GITHUB_STEP_SUMMARY
+          echo "- 🎨 Color palette extraction (hex, rgb, hsl)" >> $GITHUB_STEP_SUMMARY
+          echo "- � Typography detection" >> $GITHUB_STEP_SUMMARY
+          echo "- � One-click copy (colors & CSS variables)" >> $GITHUB_STEP_SUMMARY
+          echo "- � Multiple CORS proxy fallbacks" >> $GITHUB_STEP_SUMMARY
+          echo "- 🎯 Smart color deduplication" >> $GITHUB_STEP_SUMMARY
+          echo "- 📱 Fully responsive design" >> $GITHUB_STEP_SUMMARY
+          echo "- 🚀 Pure client-side - no backend required" >> $GITHUB_STEP_SUMMARY
+          echo "- � Built with love by Darkmintis" >> $GITHUB_STEP_SUMMARY
+
+
