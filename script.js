@@ -283,6 +283,10 @@ function extractColors(cssText) {
     extractHexColors(cssText, colorMap);
     extractRgbColors(cssText, colorMap);
     extractHslColors(cssText, colorMap);
+    extractNamedColors(cssText, colorMap);
+    
+    // Extract colors from gradients specifically
+    extractColorsFromGradients(cssText, colorMap);
     
     // Filter and deduplicate colors with statistics
     return getUniqueColorPalette(colorMap, cssText);
@@ -336,6 +340,77 @@ function extractHslColors(cssText, colorMap) {
     }
 }
 
+function extractNamedColors(cssText, colorMap) {
+    // Extended CSS named colors that are commonly used
+    const namedColors = {
+        'purple': '#800080', 'violet': '#ee82ee', 'indigo': '#4b0082',
+        'pink': '#ffc0cb', 'hotpink': '#ff69b4', 'deeppink': '#ff1493',
+        'red': '#ff0000', 'crimson': '#dc143c', 'darkred': '#8b0000',
+        'orange': '#ffa500', 'orangered': '#ff4500', 'darkorange': '#ff8c00',
+        'yellow': '#ffff00', 'gold': '#ffd700', 'khaki': '#f0e68c',
+        'green': '#008000', 'lime': '#00ff00', 'darkgreen': '#006400',
+        'blue': '#0000ff', 'navy': '#000080', 'darkblue': '#00008b',
+        'cyan': '#00ffff', 'aqua': '#00ffff', 'teal': '#008080',
+        'magenta': '#ff00ff', 'fuchsia': '#ff00ff',
+        'brown': '#a52a2a', 'maroon': '#800000',
+        'gray': '#808080', 'grey': '#808080', 'silver': '#c0c0c0',
+        'coral': '#ff7f50', 'tomato': '#ff6347', 'salmon': '#fa8072',
+        'lavender': '#e6e6fa', 'plum': '#dda0dd', 'orchid': '#da70d6'
+    };
+    
+    for (const [name, hex] of Object.entries(namedColors)) {
+        const pattern = new RegExp(String.raw`\b${name}\b`, 'gi');
+        const matches = cssText.match(pattern);
+        if (matches) {
+            colorMap.set(hex, (colorMap.get(hex) || 0) + matches.length);
+        }
+    }
+}
+
+function extractColorsFromGradients(cssText, colorMap) {
+    // Extract gradient definitions and parse colors from them
+    const gradientPattern = /(linear-gradient|radial-gradient|conic-gradient|repeating-linear-gradient|repeating-radial-gradient)\s*\([^)]+\)/gi;
+    let match;
+    
+    while ((match = gradientPattern.exec(cssText)) !== null) {
+        const gradientContent = match[0];
+        
+        // Extract hex colors from gradient
+        const hexPattern = /#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})\b/g;
+        let hexMatch;
+        while ((hexMatch = hexPattern.exec(gradientContent)) !== null) {
+            const hex = normalizeHex(hexMatch[0]);
+            colorMap.set(hex, (colorMap.get(hex) || 0) + 2); // Give higher weight to gradient colors
+        }
+        
+        // Extract rgb/rgba colors from gradient
+        const rgbPattern = /rgba?\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*[\d.]+)?\s*\)/g;
+        let rgbMatch;
+        while ((rgbMatch = rgbPattern.exec(gradientContent)) !== null) {
+            const r = Number.parseInt(rgbMatch[1], 10);
+            const g = Number.parseInt(rgbMatch[2], 10);
+            const b = Number.parseInt(rgbMatch[3], 10);
+            if (isValidRgbValue(r) && isValidRgbValue(g) && isValidRgbValue(b)) {
+                const hex = rgbToHex(r, g, b);
+                colorMap.set(hex, (colorMap.get(hex) || 0) + 2);
+            }
+        }
+        
+        // Extract hsl/hsla colors from gradient
+        const hslPattern = /hsla?\s*\(\s*([\d.]+)\s*,\s*([\d.]+)%\s*,\s*([\d.]+)%/g;
+        let hslMatch;
+        while ((hslMatch = hslPattern.exec(gradientContent)) !== null) {
+            const h = Number.parseFloat(hslMatch[1]);
+            const s = Number.parseFloat(hslMatch[2]);
+            const l = Number.parseFloat(hslMatch[3]);
+            if (isValidHslValue(h, s, l)) {
+                const hex = hslToHex(h, s, l);
+                colorMap.set(hex, (colorMap.get(hex) || 0) + 2);
+            }
+        }
+    }
+}
+
 function filterAndDeduplicateColors(colorMap) {
     // Calculate total occurrences for percentage
     const totalOccurrences = Array.from(colorMap.values()).reduce((sum, count) => sum + count, 0);
@@ -343,7 +418,7 @@ function filterAndDeduplicateColors(colorMap) {
     const filteredColors = Array.from(colorMap.entries())
         .filter(([color]) => !isCommonColor(color))
         .sort((a, b) => b[1] - a[1])
-        .slice(0, 15);
+        .slice(0, 20); // Increased from 15 to capture more colors
     
     const uniqueColors = [];
     const statsMap = new Map();
@@ -357,7 +432,7 @@ function filterAndDeduplicateColors(colorMap) {
                 percentage: percentage,
                 total: totalOccurrences
             });
-            if (uniqueColors.length >= 10) break;
+            if (uniqueColors.length >= 12) break; // Increased from 10 to show more diverse colors
         }
     }
     
@@ -422,30 +497,40 @@ function extractFonts(cssText) {
 function extractGradients(cssText) {
     const gradients = new Set();
     
-    // Match linear, radial, and conic gradients - improved regex for nested parentheses
-    const gradientPattern = /((?:linear|radial|conic|repeating-linear|repeating-radial)-gradient\s*\([^;{}]+?\))/gi;
+    // Match linear, radial, and conic gradients with better pattern
+    const gradientPattern = /((?:repeating-)?(?:linear|radial|conic)-gradient)\s*\(/gi;
     let match;
     
     while ((match = gradientPattern.exec(cssText)) !== null) {
-        let gradient = match[1].trim();
+        const startIndex = match.index;
+        const gradientType = match[0];
         
-        // Handle nested parentheses by counting
+        // Find the complete gradient by counting parentheses
         let openCount = 1;
-        let startPos = gradient.indexOf('(') + 1;
-        let endPos = startPos;
+        let currentIndex = match.index + match[0].length;
+        let gradientContent = gradientType;
         
-        while (openCount > 0 && endPos < gradient.length) {
-            if (gradient[endPos] === '(') openCount++;
-            if (gradient[endPos] === ')') openCount--;
-            endPos++;
+        while (openCount > 0 && currentIndex < cssText.length) {
+            const char = cssText[currentIndex];
+            gradientContent += char;
+            
+            if (char === '(') openCount++;
+            else if (char === ')') openCount--;
+            
+            currentIndex++;
+            
+            // Safety limit to prevent infinite loops
+            if (currentIndex - startIndex > 500) break;
         }
         
-        // Clean up the gradient
-        gradient = gradient.substring(0, endPos);
-        
-        if (gradient.length > 20 && gradient.length < 300 && !gradient.includes('undefined')) {
-            gradients.add(gradient);
-            if (gradients.size >= 8) break; // Limit to 8 gradients
+        // Validate and add gradient
+        if (openCount === 0 && gradientContent.length > 20 && gradientContent.length < 400) {
+            // Clean up the gradient string
+            gradientContent = gradientContent.trim();
+            if (!gradientContent.includes('undefined') && !gradientContent.includes('null')) {
+                gradients.add(gradientContent);
+                if (gradients.size >= 10) break; // Increased limit to 10 gradients
+            }
         }
     }
     
@@ -560,7 +645,7 @@ function createGradientItem(gradient) {
     
     const preview = document.createElement('div');
     preview.className = 'gradient-preview';
-    preview.style.backgroundImage = gradient; // Use backgroundImage instead of background
+    preview.style.background = gradient; // Set the gradient as background
     
     const code = document.createElement('div');
     code.className = 'gradient-code';
@@ -847,7 +932,8 @@ function hslToHex(h, s, l) {
 }
 
 function isCommonColor(hex) {
-    const common = ['#ffffff', '#fff', '#000000', '#000', '#transparent', '#fefefe', '#010101', '#fcfcfc', '#fdfdfd'];
+    // Only filter out pure white, pure black, and very close variations
+    const common = ['#ffffff', '#000000', '#fefefe', '#010101', '#fcfcfc', '#fdfdfd', '#fafafa', '#f9f9f9'];
     return common.includes(hex.toLowerCase());
 }
 
@@ -868,13 +954,14 @@ function hasSimilarColor(colors, newColor) {
         const existingRgb = hexToRgb(existingColor);
         if (!existingRgb) continue;
         
-        // Calculate color difference
+        // Calculate color difference using simple Manhattan distance
         const diff = Math.abs(newRgb.r - existingRgb.r) +
                      Math.abs(newRgb.g - existingRgb.g) +
                      Math.abs(newRgb.b - existingRgb.b);
         
-        // If colors are very similar (difference < 30), consider them duplicate
-        if (diff < 30) return true;
+        // Reduced threshold from 30 to 20 to allow more color variations
+        // This helps capture different shades of the same color (e.g., light purple vs dark purple)
+        if (diff < 20) return true;
     }
     
     return false;
