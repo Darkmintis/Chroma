@@ -1,6 +1,7 @@
 // ===================================
-// StyleSnatcher - JavaScript Logic
-// Client-side style extraction tool
+// Chroma - JavaScript Logic
+// Client-side design extraction tool
+// Enhanced Version with Advanced Features
 // ===================================
 
 // DOM Elements
@@ -17,6 +18,39 @@ const copyFeedback = document.getElementById('copyFeedback');
 // State
 let extractedColors = [];
 let extractedFonts = [];
+let extractedGradients = [];
+let extractedSpacing = [];
+let extractedBorderRadius = [];
+let extractedShadows = [];
+let colorStats = new Map(); // Track color usage with percentages
+let fontStats = new Map(); // Track font usage with percentages
+let currentUrl = '';
+let analysisHistory = [];
+
+// ===================================
+// Initialization
+// ===================================
+
+// Load history from localStorage on page load
+document.addEventListener('DOMContentLoaded', () => {
+    loadHistoryFromStorage();
+    applyThemePreference();
+    
+    // Setup additional event listeners
+    const themeToggle = document.getElementById('themeToggle');
+    const exportJsonBtn = document.getElementById('exportJsonBtn');
+    
+    if (themeToggle) {
+        themeToggle.addEventListener('click', toggleTheme);
+    }
+    
+    if (exportJsonBtn) {
+        exportJsonBtn.addEventListener('click', () => {
+            exportAsJSON();
+            showCopyFeedback('Exported as JSON!');
+        });
+    }
+});
 
 // ===================================
 // Event Listeners
@@ -52,30 +86,65 @@ async function handleSnatch() {
     hideResults();
     showLoading();
     snatchBtn.disabled = true;
+    currentUrl = url;
     
     try {
-        // Fetch website content
+        // Fetch website content with timeout
         const html = await fetchSiteContent(url);
+        
+        if (!html || html.length < 100) {
+            throw new Error('Received empty or invalid response from website');
+        }
         
         // Extract styles
         const styles = await extractStyles(html, url);
         
-        // Extract colors and fonts
-        extractedColors = extractColors(styles);
-        extractedFonts = extractFonts(styles);
+        // Extract all style properties with statistics
+        const colorData = extractColors(styles);
+        extractedColors = colorData.colors;
+        colorStats = colorData.stats;
+        
+        const fontData = extractFonts(styles);
+        extractedFonts = fontData.fonts;
+        fontStats = fontData.stats;
+        
+        extractedGradients = extractGradients(styles);
+        extractedSpacing = extractSpacing(styles);
+        extractedBorderRadius = extractBorderRadius(styles);
+        extractedShadows = extractShadows(styles);
         
         // Validate results
         if (extractedColors.length === 0 && extractedFonts.length === 0) {
-            showError('No styles found. The website might be blocking access or using inline JavaScript styles.');
+            showError('No styles found. The website might be blocking access or using JavaScript-generated styles.');
             return;
         }
+        
+        // Save to history
+        saveToHistory(url, {
+            colors: extractedColors,
+            fonts: extractedFonts,
+            gradients: extractedGradients,
+            timestamp: new Date().toISOString()
+        });
         
         // Display results
         displayResults();
         
     } catch (error) {
         console.error('Error:', error);
-        showError('Failed to analyze website. Make sure the URL is correct and publicly accessible.');
+        let errorMsg = 'Failed to analyze website. ';
+        
+        if (error.message.includes('fetch')) {
+            errorMsg += 'Network error or website is blocking requests.';
+        } else if (error.message.includes('timeout')) {
+            errorMsg += 'Request timed out. The website took too long to respond.';
+        } else if (error.message.includes('CORS')) {
+            errorMsg += 'CORS policy prevented access.';
+        } else {
+            errorMsg += 'Please check if the URL is correct and publicly accessible.';
+        }
+        
+        showError(errorMsg);
     } finally {
         hideLoading();
         snatchBtn.disabled = false;
@@ -85,31 +154,45 @@ async function handleSnatch() {
 async function fetchSiteContent(url) {
     // Try multiple CORS proxies for better reliability
     const proxies = [
-        `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
-        `https://corsproxy.io/?${encodeURIComponent(url)}`,
-        `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`
+        { url: `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`, name: 'AllOrigins' },
+        { url: `https://corsproxy.io/?${encodeURIComponent(url)}`, name: 'CorsProxy' },
+        { url: `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`, name: 'CodeTabs' }
     ];
     
     let lastError = null;
+    const timeout = 15000; // 15 second timeout per proxy
     
-    for (const proxyUrl of proxies) {
+    for (const proxy of proxies) {
         try {
-            const response = await fetch(proxyUrl, {
+            updateLoadingStatus(`Trying ${proxy.name}...`);
+            
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), timeout);
+            
+            const response = await fetch(proxy.url, {
                 method: 'GET',
                 headers: {
                     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
-                }
+                },
+                signal: controller.signal
             });
+            
+            clearTimeout(timeoutId);
             
             if (response.ok) {
                 const html = await response.text();
                 if (html && html.length > 100) {
+                    updateLoadingStatus('Parsing styles...');
                     return html;
                 }
             }
         } catch (error) {
             lastError = error;
-            console.debug('Proxy failed, trying next...', proxyUrl);
+            console.debug(`${proxy.name} failed:`, error.message);
+            
+            if (error.name === 'AbortError') {
+                console.debug(`${proxy.name} timed out after ${timeout}ms`);
+            }
         }
     }
     
@@ -201,19 +284,19 @@ function extractColors(cssText) {
     extractRgbColors(cssText, colorMap);
     extractHslColors(cssText, colorMap);
     
-    // Filter and deduplicate colors
+    // Filter and deduplicate colors with statistics
     return getUniqueColorPalette(colorMap, cssText);
 }
 
 function getUniqueColorPalette(colorMap, cssText) {
-    const uniqueColors = filterAndDeduplicateColors(colorMap);
+    const result = filterAndDeduplicateColors(colorMap);
     
-    // Only return default colors if we found absolutely nothing
-    if (uniqueColors.length === 0 && cssText.length < 100) {
-        return [];
+    // Only return default if we found absolutely nothing
+    if (result.colors.length === 0 && cssText.length < 100) {
+        return { colors: [], stats: new Map() };
     }
     
-    return uniqueColors.length > 0 ? uniqueColors : ['#2563eb', '#0891b2', '#059669'];
+    return result;
 }
 
 function extractHexColors(cssText, colorMap) {
@@ -254,21 +337,31 @@ function extractHslColors(cssText, colorMap) {
 }
 
 function filterAndDeduplicateColors(colorMap) {
+    // Calculate total occurrences for percentage
+    const totalOccurrences = Array.from(colorMap.values()).reduce((sum, count) => sum + count, 0);
+    
     const filteredColors = Array.from(colorMap.entries())
         .filter(([color]) => !isCommonColor(color))
         .sort((a, b) => b[1] - a[1])
-        .slice(0, 12)
-        .map(([color]) => color);
+        .slice(0, 15);
     
     const uniqueColors = [];
-    for (const color of filteredColors) {
+    const statsMap = new Map();
+    
+    for (const [color, count] of filteredColors) {
         if (!hasSimilarColor(uniqueColors, color)) {
             uniqueColors.push(color);
-            if (uniqueColors.length >= 7) break;
+            const percentage = ((count / totalOccurrences) * 100).toFixed(1);
+            statsMap.set(color, {
+                count: count,
+                percentage: percentage,
+                total: totalOccurrences
+            });
+            if (uniqueColors.length >= 10) break;
         }
     }
     
-    return uniqueColors;
+    return { colors: uniqueColors, stats: statsMap };
 }
 
 function extractFonts(cssText) {
@@ -289,13 +382,132 @@ function extractFonts(cssText) {
         }
     }
     
-    // Sort by frequency and get top fonts
+    // Also extract fonts from @font-face rules
+    const fontFacePattern = /@font-face\s*{[^}]*font-family\s*:\s*['"]?([^'";}]+)['"]?/gi;
+    while ((match = fontFacePattern.exec(cssText)) !== null) {
+        const font = match[1].trim();
+        if (font && !isGenericFont(font)) {
+            fontMap.set(font, (fontMap.get(font) || 0) + 3); // Give higher weight to @font-face fonts
+        }
+    }
+    
+    // Calculate total for percentage
+    const totalOccurrences = Array.from(fontMap.values()).reduce((sum, count) => sum + count, 0);
+    
+    // Sort by frequency and get top fonts with stats
     const sortedFonts = Array.from(fontMap.entries())
         .sort((a, b) => b[1] - a[1])
-        .slice(0, 5)
-        .map(([font]) => font);
+        .slice(0, 8);
     
-    return sortedFonts.length > 0 ? sortedFonts : ['Inter', 'Roboto', 'Arial'];
+    const fonts = [];
+    const statsMap = new Map();
+    
+    for (const [font, count] of sortedFonts) {
+        fonts.push(font);
+        const percentage = ((count / totalOccurrences) * 100).toFixed(1);
+        statsMap.set(font, {
+            count: count,
+            percentage: percentage,
+            total: totalOccurrences
+        });
+    }
+    
+    if (fonts.length === 0) {
+        return { fonts: ['Inter', 'Roboto', 'Arial'], stats: new Map() };
+    }
+    
+    return { fonts, stats: statsMap };
+}
+
+function extractGradients(cssText) {
+    const gradients = new Set();
+    
+    // Match linear, radial, and conic gradients - improved regex for nested parentheses
+    const gradientPattern = /((?:linear|radial|conic|repeating-linear|repeating-radial)-gradient\s*\([^;{}]+?\))/gi;
+    let match;
+    
+    while ((match = gradientPattern.exec(cssText)) !== null) {
+        let gradient = match[1].trim();
+        
+        // Handle nested parentheses by counting
+        let openCount = 1;
+        let startPos = gradient.indexOf('(') + 1;
+        let endPos = startPos;
+        
+        while (openCount > 0 && endPos < gradient.length) {
+            if (gradient[endPos] === '(') openCount++;
+            if (gradient[endPos] === ')') openCount--;
+            endPos++;
+        }
+        
+        // Clean up the gradient
+        gradient = gradient.substring(0, endPos);
+        
+        if (gradient.length > 20 && gradient.length < 300 && !gradient.includes('undefined')) {
+            gradients.add(gradient);
+            if (gradients.size >= 8) break; // Limit to 8 gradients
+        }
+    }
+    
+    return Array.from(gradients);
+}
+
+function extractSpacing(cssText) {
+    const spacingMap = new Map();
+    
+    // Extract padding and margin values
+    const spacingPattern = /(padding|margin):\s*([^;{}]+)/gi;
+    let match;
+    
+    while ((match = spacingPattern.exec(cssText)) !== null) {
+        const value = match[2].trim();
+        // Only track rem and px values
+        if (/\d+(?:px|rem|em)/.test(value)) {
+            spacingMap.set(value, (spacingMap.get(value) || 0) + 1);
+        }
+    }
+    
+    // Get top 5 most common spacing values
+    return Array.from(spacingMap.entries())
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 5)
+        .map(([value]) => value);
+}
+
+function extractBorderRadius(cssText) {
+    const radiusSet = new Set();
+    
+    // Extract border-radius values
+    const radiusPattern = /border-radius:\s*([^;{}]+)/gi;
+    let match;
+    
+    while ((match = radiusPattern.exec(cssText)) !== null) {
+        const value = match[1].trim();
+        if (/\d+(?:px|rem|em|%)/.test(value)) {
+            radiusSet.add(value);
+            if (radiusSet.size >= 5) break;
+        }
+    }
+    
+    return Array.from(radiusSet);
+}
+
+function extractShadows(cssText) {
+    const shadowSet = new Set();
+    
+    // Extract box-shadow values
+    const shadowPattern = /box-shadow:\s*([^;{}]+)/gi;
+    let match;
+    
+    while ((match = shadowPattern.exec(cssText)) !== null) {
+        const value = match[1].trim();
+        if (value !== 'none' && value.length > 10 && value.length < 150) {
+            shadowSet.add(value);
+            if (shadowSet.size >= 5) break;
+        }
+    }
+    
+    return Array.from(shadowSet);
 }
 
 function displayResults() {
@@ -303,21 +515,81 @@ function displayResults() {
     colorPalette.innerHTML = '';
     typography.innerHTML = '';
     
-    // Display colors
+    // Get gradient container (if exists)
+    const gradientContainer = document.getElementById('gradientPalette');
+    if (gradientContainer) {
+        gradientContainer.innerHTML = '';
+    }
+    
+    // Display colors with percentages
     for (const color of extractedColors) {
         const swatch = createColorSwatch(color);
         colorPalette.appendChild(swatch);
     }
     
-    // Display fonts
+    // Display fonts with percentages
     for (let index = 0; index < extractedFonts.length; index++) {
         const font = extractedFonts[index];
         const fontItem = createFontItem(font, index);
         typography.appendChild(fontItem);
     }
     
+    // Display gradients if found
+    if (gradientContainer && extractedGradients.length > 0) {
+        for (const gradient of extractedGradients) {
+            const gradientItem = createGradientItem(gradient);
+            gradientContainer.appendChild(gradientItem);
+        }
+        gradientContainer.parentElement.classList.remove('hidden');
+    } else if (gradientContainer) {
+        gradientContainer.parentElement.classList.add('hidden');
+    }
+    
     // Show results section
     showResults();
+    
+    // Smooth scroll to results
+    setTimeout(() => {
+        resultsSection.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }, 100);
+}
+
+function createGradientItem(gradient) {
+    const item = document.createElement('div');
+    item.className = 'gradient-item';
+    
+    const preview = document.createElement('div');
+    preview.className = 'gradient-preview';
+    preview.style.backgroundImage = gradient; // Use backgroundImage instead of background
+    
+    const code = document.createElement('div');
+    code.className = 'gradient-code';
+    code.textContent = gradient;
+    
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'gradient-copy-btn';
+    copyBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 20 20" fill="none"><rect x="7" y="7" width="11" height="11" rx="2" stroke="currentColor" stroke-width="2"/><path d="M4 13H3C2.44772 13 2 12.5523 2 12V3C2 2.44772 2.44772 2 3 2H12C12.5523 2 13 2.44772 13 3V4" stroke="currentColor" stroke-width="2"/></svg>';
+    copyBtn.setAttribute('aria-label', 'Copy gradient');
+    
+    // Click to copy gradient
+    const copyGradient = (e) => {
+        e.stopPropagation();
+        copyToClipboard(gradient);
+        showCopyFeedback(`Copied gradient!`);
+        item.classList.add('copied');
+        setTimeout(() => item.classList.remove('copied'), 300);
+    };
+    
+    copyBtn.addEventListener('click', copyGradient);
+    item.addEventListener('click', copyGradient);
+    
+    item.appendChild(preview);
+    item.appendChild(code);
+    item.appendChild(copyBtn);
+    item.setAttribute('role', 'button');
+    item.setAttribute('tabindex', '0');
+    
+    return item;
 }
 
 function createColorSwatch(color) {
@@ -328,16 +600,53 @@ function createColorSwatch(color) {
     swatch.setAttribute('tabindex', '0');
     swatch.setAttribute('aria-label', `Copy color ${color}`);
     
+    // Add light/dark class for better text visibility
+    if (isLightColor(color)) {
+        swatch.classList.add('light-color');
+    }
+    
     const code = document.createElement('div');
     code.className = 'color-code';
     code.textContent = color.toUpperCase();
     
+    // Add percentage info
+    const stats = colorStats.get(color);
+    if (stats) {
+        const percentInfo = document.createElement('div');
+        percentInfo.className = 'color-percentage';
+        percentInfo.textContent = `${stats.percentage}%`;
+        code.appendChild(percentInfo);
+    }
+    
+    // Add contrast indicator
+    const contrastWhite = getColorContrast(color, '#ffffff');
+    const contrastBlack = getColorContrast(color, '#000000');
+    
+    const contrastInfo = document.createElement('div');
+    contrastInfo.className = 'contrast-info';
+    
+    if (contrastWhite && contrastBlack) {
+        const bestContrast = Math.max(contrastWhite, contrastBlack);
+        let wcagLevel = 'Poor';
+        if (bestContrast >= 7) {
+            wcagLevel = 'AAA';
+        } else if (bestContrast >= 4.5) {
+            wcagLevel = 'AA';
+        }
+        contrastInfo.textContent = `WCAG: ${wcagLevel}`;
+    }
+    
     swatch.appendChild(code);
+    swatch.appendChild(contrastInfo);
     
     // Click to copy
     const copyColor = () => {
         copyToClipboard(color);
         showCopyFeedback(`Copied ${color}!`);
+        
+        // Visual feedback
+        swatch.classList.add('copied');
+        setTimeout(() => swatch.classList.remove('copied'), 300);
     };
     
     swatch.addEventListener('click', copyColor);
@@ -355,6 +664,9 @@ function createFontItem(font, index) {
     const item = document.createElement('div');
     item.className = 'font-item';
     
+    const header = document.createElement('div');
+    header.className = 'font-header';
+    
     const name = document.createElement('div');
     name.className = 'font-name';
     
@@ -366,12 +678,23 @@ function createFontItem(font, index) {
     }
     name.textContent = `${prefix}${font}`;
     
+    // Add percentage badge
+    const stats = fontStats.get(font);
+    if (stats) {
+        const badge = document.createElement('span');
+        badge.className = 'font-percentage-badge';
+        badge.textContent = `${stats.percentage}%`;
+        name.appendChild(badge);
+    }
+    
+    header.appendChild(name);
+    
     const sample = document.createElement('div');
     sample.className = 'font-sample';
     sample.style.fontFamily = `${font}, sans-serif`;
-    sample.textContent = 'The quick brown fox jumps over the lazy dog.';
+    sample.textContent = 'The quick brown fox jumps over the lazy dog. 0123456789';
     
-    item.appendChild(name);
+    item.appendChild(header);
     item.appendChild(sample);
     
     return item;
@@ -389,35 +712,65 @@ async function handleCopyCss() {
 
 function generateCssVariables() {
     let css = ':root {\n';
-    css += '  /* Color Palette */\n';
     
-    for (let index = 0; index < extractedColors.length; index++) {
-        const color = extractedColors[index];
-        let varName;
-        if (index === 0) {
-            varName = 'primary';
-        } else if (index === 1) {
-            varName = 'secondary';
-        } else if (index === 2) {
-            varName = 'accent';
-        } else {
-            varName = `color-${index + 1}`;
+    // Colors
+    if (extractedColors.length > 0) {
+        css += '  /* Color Palette */\n';
+        for (let index = 0; index < extractedColors.length; index++) {
+            const color = extractedColors[index];
+            let varName;
+            if (index === 0) {
+                varName = 'primary';
+            } else if (index === 1) {
+                varName = 'secondary';
+            } else if (index === 2) {
+                varName = 'accent';
+            } else {
+                varName = `color-${index + 1}`;
+            }
+            css += `  --${varName}-color: ${color};\n`;
         }
-        css += `  --${varName}-color: ${color};\n`;
     }
     
-    css += '\n  /* Typography */\n';
-    for (let index = 0; index < extractedFonts.length; index++) {
-        const font = extractedFonts[index];
-        let varName;
-        if (index === 0) {
-            varName = 'primary';
-        } else if (index === 1) {
-            varName = 'secondary';
-        } else {
-            varName = `font-${index + 1}`;
+    // Fonts
+    if (extractedFonts.length > 0) {
+        css += '\n  /* Typography */\n';
+        for (let index = 0; index < extractedFonts.length; index++) {
+            const font = extractedFonts[index];
+            let varName;
+            if (index === 0) {
+                varName = 'primary';
+            } else if (index === 1) {
+                varName = 'secondary';
+            } else {
+                varName = `font-${index + 1}`;
+            }
+            css += `  --font-${varName}: ${font}, sans-serif;\n`;
         }
-        css += `  --font-${varName}: ${font}, sans-serif;\n`;
+    }
+    
+    // Spacing
+    if (extractedSpacing.length > 0) {
+        css += '\n  /* Spacing */\n';
+        extractedSpacing.forEach((spacing, index) => {
+            css += `  --spacing-${index + 1}: ${spacing};\n`;
+        });
+    }
+    
+    // Border Radius
+    if (extractedBorderRadius.length > 0) {
+        css += '\n  /* Border Radius */\n';
+        extractedBorderRadius.forEach((radius, index) => {
+            css += `  --radius-${index + 1}: ${radius};\n`;
+        });
+    }
+    
+    // Shadows
+    if (extractedShadows.length > 0) {
+        css += '\n  /* Shadows */\n';
+        extractedShadows.forEach((shadow, index) => {
+            css += `  --shadow-${index + 1}: ${shadow};\n`;
+        });
     }
     
     css += '}\n';
@@ -562,6 +915,140 @@ function showCopyFeedback(message) {
     setTimeout(() => {
         copyFeedback.classList.add('hidden');
     }, 2000);
+}
+
+// ===================================
+// History Management
+// ===================================
+
+function saveToHistory(url, data) {
+    try {
+        // Load existing history
+        const history = JSON.parse(localStorage.getItem('chromaHistory') || '[]');
+        
+        // Add new entry at the beginning
+        history.unshift({
+            url,
+            ...data,
+            timestamp: new Date().toISOString()
+        });
+        
+        // Keep only last 10 entries
+        const trimmedHistory = history.slice(0, 10);
+        
+        // Save back to localStorage
+        localStorage.setItem('chromaHistory', JSON.stringify(trimmedHistory));
+        analysisHistory = trimmedHistory;
+    } catch (error) {
+        console.error('Failed to save to history:', error);
+    }
+}
+
+function loadHistoryFromStorage() {
+    try {
+        const history = JSON.parse(localStorage.getItem('chromaHistory') || '[]');
+        analysisHistory = history;
+    } catch (error) {
+        console.error('Failed to load history:', error);
+        analysisHistory = [];
+    }
+}
+
+// ===================================
+// Theme Management
+// ===================================
+
+function applyThemePreference() {
+    const savedTheme = localStorage.getItem('chromaTheme') || 'light';
+    document.documentElement.dataset.theme = savedTheme;
+}
+
+function toggleTheme() {
+    const currentTheme = document.documentElement.dataset.theme || 'light';
+    const newTheme = currentTheme === 'light' ? 'dark' : 'light';
+    document.documentElement.dataset.theme = newTheme;
+    localStorage.setItem('chromaTheme', newTheme);
+}
+
+// ===================================
+// Loading Status Updates
+// ===================================
+
+function updateLoadingStatus(message) {
+    const loadingText = loadingIndicator.querySelector('p');
+    if (loadingText) {
+        loadingText.textContent = message;
+    }
+}
+
+// ===================================
+// Color Utilities
+// ===================================
+
+function getColorContrast(color1, color2) {
+    const rgb1 = hexToRgb(color1);
+    const rgb2 = hexToRgb(color2);
+    
+    if (!rgb1 || !rgb2) return null;
+    
+    const l1 = getRelativeLuminance(rgb1);
+    const l2 = getRelativeLuminance(rgb2);
+    
+    const lighter = Math.max(l1, l2);
+    const darker = Math.min(l1, l2);
+    
+    return (lighter + 0.05) / (darker + 0.05);
+}
+
+function getRelativeLuminance(rgb) {
+    const rsRGB = rgb.r / 255;
+    const gsRGB = rgb.g / 255;
+    const bsRGB = rgb.b / 255;
+    
+    const r = rsRGB <= 0.03928 ? rsRGB / 12.92 : Math.pow((rsRGB + 0.055) / 1.055, 2.4);
+    const g = gsRGB <= 0.03928 ? gsRGB / 12.92 : Math.pow((gsRGB + 0.055) / 1.055, 2.4);
+    const b = bsRGB <= 0.03928 ? bsRGB / 12.92 : Math.pow((bsRGB + 0.055) / 1.055, 2.4);
+    
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+function isLightColor(hex) {
+    const rgb = hexToRgb(hex);
+    if (!rgb) return true;
+    const luminance = getRelativeLuminance(rgb);
+    return luminance > 0.5;
+}
+
+// ===================================
+// Export Functionality
+// ===================================
+
+function exportAsJSON() {
+    const data = {
+        url: currentUrl,
+        timestamp: new Date().toISOString(),
+        colors: extractedColors,
+        fonts: extractedFonts,
+        gradients: extractedGradients,
+        spacing: extractedSpacing,
+        borderRadius: extractedBorderRadius,
+        shadows: extractedShadows
+    };
+    
+    const json = JSON.stringify(data, null, 2);
+    downloadFile('chroma-export.json', json, 'application/json');
+}
+
+function downloadFile(filename, content, mimeType) {
+    const blob = new Blob([content], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
 }
 
 // UI State Management
