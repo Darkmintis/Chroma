@@ -1,4 +1,4 @@
-name: Deploy StyleSnatcher to darkmintis-dev
+name: Deploy Chroma to darkmintis-dev
 
 on:
   push:
@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-      - name: Checkout StyleSnatcher repository
+      - name: Checkout Chroma repository
         uses: actions/checkout@v4
 
       - name: Checkout darkmintis-dev
@@ -24,18 +24,18 @@ jobs:
       - name: Copy production files to main repo
         run: |
           # Remove old deployment
-          rm -rf main-repo/dist/stylesnatcher
-          mkdir -p main-repo/dist/stylesnatcher
+          rm -rf main-repo/dist/chroma
+          mkdir -p main-repo/dist/chroma
 
           # Copy production files
-          cp index.html main-repo/dist/stylesnatcher/
-          cp styles.css main-repo/dist/stylesnatcher/
-          cp script.js main-repo/dist/stylesnatcher/
-          cp README.md main-repo/dist/stylesnatcher/
+          cp index.html main-repo/dist/chroma/
+          cp styles.css main-repo/dist/chroma/
+          cp script.js main-repo/dist/chroma/
+          cp README.md main-repo/dist/chroma/
 
           echo "✅ Production files copied successfully"
           echo "📦 Deployed files:"
-          ls -la main-repo/dist/stylesnatcher/
+          ls -la main-repo/dist/chroma/
 
       - name: Commit and push to darkmintis-dev
         run: |
@@ -44,13 +44,13 @@ jobs:
           git config user.email "actions@github.com"
           
           # Add changes
-          git add dist/stylesnatcher/
+          git add dist/chroma/
           
           # Commit only if there are changes
           if git diff --staged --quiet; then
             echo "ℹ️ No changes to deploy"
           else
-            git commit -m "🎨 Update StyleSnatcher from commit ${GITHUB_SHA:0:7}"
+            git commit -m "🎨 Update Chroma from commit ${GITHUB_SHA:0:7}"
             git push
             echo "✅ Changes pushed successfully"
           fi
@@ -59,8 +59,8 @@ jobs:
         run: |
           echo "## 🎉 Deployment Complete!" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tool**: StyleSnatcher - Extract the Style DNA of Any Website" >> $GITHUB_STEP_SUMMARY
-          echo "- **Live URL**: https://darkmintis.dev/stylesnatcher" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tool**: Chroma - Extract the Style DNA of Any Website" >> $GITHUB_STEP_SUMMARY
+          echo "- **Live URL**: https://darkmintis.dev/chroma" >> $GITHUB_STEP_SUMMARY
           echo "- **Commit**: \`${GITHUB_SHA:0:7}\`" >> $GITHUB_STEP_SUMMARY
           echo "- **Triggered by**: ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Time**: $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
